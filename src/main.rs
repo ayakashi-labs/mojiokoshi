@@ -1,12 +1,19 @@
 mod app;
+mod audio;
+mod export;
+mod transcription;
 
-use app::MyEguiApp;
+use app::MeetingMinutesApp;
 
 fn main() -> eframe::Result<()> {
-    let native_options = eframe::NativeOptions::default();
+    let native_options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1100.0, 760.0]),
+        ..Default::default()
+    };
+
     eframe::run_native(
-        "My egui App",
+        "mojiokoshi",
         native_options,
-        Box::new(|cc| Ok(Box::new(MyEguiApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(MeetingMinutesApp::new(cc)))),
     )
 }

@@ -1,38 +1,88 @@
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use std::path::Path;
 
-fn Whisper() {
-    let path_to_model = std::env::args().nth(1).unwrap();
+use whisper_rs::{
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+    WhisperVadParams,
+};
 
-    // load a context and model
-    let ctx = WhisperContext::new_with_params(path_to_model, WhisperContextParameters::default())
-        .expect("failed to load model");
+#[derive(Clone, Debug)]
+pub struct RawTranscriptSegment {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+}
 
-    // create a params object
-    let params = FullParams::new(SamplingStrategy::BeamSearch {
-        beam_size: 5,
-        patience: -1.0,
-    });
+pub struct WhisperTranscriber {
+    state: WhisperState,
+    _context: WhisperContext,
+    vad_model_path: String,
+}
 
-    // assume we have a buffer of audio data
-    // here we'll make a fake one, floating point samples, 32 bit, 16KHz, mono
-    let audio_data = vec![0_f32; 16000 * 2];
+impl WhisperTranscriber {
+    pub fn new(model_path: &Path, vad_model_path: &Path) -> Result<Self, String> {
+        let params = WhisperContextParameters::default();
+        let context = WhisperContext::new_with_params(model_path, params)
+            .map_err(|error| format!("Whisperモデルを読み込めません: {error}"))?;
+        let state = context
+            .create_state()
+            .map_err(|error| format!("Whisper stateを作成できません: {error}"))?;
+        let vad_model_path = vad_model_path
+            .to_str()
+            .ok_or_else(|| "Whisper VADモデルのパスをUTF-8として扱えません".to_owned())?
+            .to_owned();
 
-    // now we can run the model
-    let mut state = ctx.create_state().expect("failed to create state");
-    state
-        .full(params, &audio_data[..])
-        .expect("failed to run model");
-
-    // fetch the results
-    for segment in state.as_iter() {
-        println!(
-            "[{} - {}]: {}",
-            // note start and end timestamps are in centiseconds
-            // (10s of milliseconds)
-            segment.start_timestamp(),
-            segment.end_timestamp(),
-            // the Display impl for WhisperSegment will replace invalid UTF-8 with the Unicode replacement character
-            segment
-        );
+        Ok(Self {
+            state,
+            _context: context,
+            vad_model_path,
+        })
     }
+
+    pub fn transcribe(
+        &mut self,
+        samples: &[f32],
+        offset_ms: u64,
+    ) -> Result<Vec<RawTranscriptSegment>, String> {
+        if samples.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut params = FullParams::new(SamplingStrategy::BeamSearch {
+            beam_size: 5,
+            patience: -1.0,
+        });
+
+        let threads = std::thread::available_parallelism()
+            .map(|count| count.get().min(8) as i32)
+            .unwrap_or(4);
+        params.set_n_threads(threads);
+        params.set_language(Some("ja"));
+        params.set_translate(false);
+        params.set_no_context(true);
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_vad_model_path(Some(&self.vad_model_path));
+        params.set_vad_params(WhisperVadParams::new());
+        params.enable_vad(true);
+
+        self.state
+            .full(params, samples)
+            .map_err(|error| format!("Whisper文字起こしに失敗しました: {error}"))?;
+
+        Ok(self
+            .state
+            .as_iter()
+            .map(|segment| RawTranscriptSegment {
+                start_ms: offset_ms + timestamp_to_ms(segment.start_timestamp()),
+                end_ms: offset_ms + timestamp_to_ms(segment.end_timestamp()),
+                text: segment.to_string().trim().to_owned(),
+            })
+            .collect())
+    }
+}
+
+fn timestamp_to_ms(timestamp: i64) -> u64 {
+    timestamp.max(0) as u64 * 10
 }

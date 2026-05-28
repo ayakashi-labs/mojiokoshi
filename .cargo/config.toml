@@ -1,0 +1,7 @@
+[build]
+# The Vulkan shader generator creates very deep nested CMake paths on Windows.
+# Keep Cargo's target dir short enough for MSVC/CMake path handling.
+target-dir = "../../t/mojiokoshi"
+
+[env]
+CMAKE_GENERATOR_x86_64_pc_windows_msvc = { value = "Ninja", force = true }
